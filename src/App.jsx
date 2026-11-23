@@ -1,6 +1,8 @@
-
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from './lib/supabase'
 import './App.css';
+import { useAuth } from './AuthContext'
+import Login from './Login'
 
 const starterEntries = [
   { id: 1, jyutping: 'nei5 hou2', english: 'Hello', type: 'phrase', category: 'Greetings' },
@@ -27,7 +29,8 @@ function normaliseJyutping(value, ignoreTones = false) {
 }
 
 function App() {
-  const [entries, setEntries] = useState(starterEntries);
+  
+  const [entries, setEntries] = useState([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [activePage, setActivePage] = useState('Dictionary');
@@ -36,13 +39,13 @@ function App() {
   const [newEnglish, setNewEnglish] = useState('');
   const [newType, setNewType] = useState('word');
   const [newCategory, setNewCategory] = useState('Everyday');
-
+  
   const filteredEntries = useMemo(() => {
   const query = normaliseSearch(search);
   const hasToneNumbers = /[1-6]/.test(search);
 
   const jyutpingQuery = normaliseJyutping(search, !hasToneNumbers);
-
+  
   return entries.filter((entry) => {
     const matchesType = filter === 'all' || entry.type === filter;
 
@@ -58,27 +61,107 @@ function App() {
     return matchesType && (matchesJyutping || matchesEnglish);
   });
 }, [entries, search, filter]);
+  const { user, loading, signOut } = useAuth()
+  const hasLoadedRef = useRef(false)
+  useEffect(() => {
+  if (!user || hasLoadedRef.current) return
 
-  function addEntry(event) {
-    event.preventDefault();
+  hasLoadedRef.current = true
 
-    if (!newJyutping.trim() || !newEnglish.trim()) return;
+  async function loadEntries() {
+    const { data: existingEntries, error: loadError } = await supabase
+      .from('entries')
+      .select('id, jyutping, english_meaning, entry_type')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
 
-    const entry = {
-      id: Date.now(),
-      jyutping: newJyutping.trim(),
-      english: newEnglish.trim(),
-      type: newType,
-      category: newCategory,
-    };
+    if (loadError) {
+      console.error('Error loading vocabulary:', loadError)
+      return
+    }
 
-    setEntries((current) => [entry, ...current]);
-    setNewJyutping('');
-    setNewEnglish('');
-    setShowAddForm(false);
-    setFilter('all');
-    setSearch('');
+    let databaseEntries = existingEntries
+
+    // Import starter vocabulary only if the database is empty
+    if (databaseEntries.length === 0) {
+      const starterData = starterEntries.map((entry) => ({
+        user_id: user.id,
+        jyutping: entry.jyutping,
+        english_meaning: entry.english,
+        entry_type: entry.type,
+      }))
+
+      const { data: importedEntries, error: importError } = await supabase
+        .from('entries')
+        .insert(starterData)
+        .select('id, jyutping, english_meaning, entry_type')
+
+      if (importError) {
+        console.error('Error importing starter vocabulary:', importError)
+        return
+      }
+
+      databaseEntries = importedEntries
+    }
+
+    const formattedEntries = databaseEntries.map((entry) => ({
+      id: entry.id,
+      jyutping: entry.jyutping,
+      english: entry.english_meaning,
+      type: entry.entry_type,
+      category: 'Uncategorised',
+    }))
+
+    setEntries(formattedEntries)
   }
+
+  loadEntries()
+}, [user])
+
+if (loading) {
+  return <div>Loading...</div>
+}
+
+if (!user) {
+  return <Login />
+}
+  async function addEntry(event) {
+  event.preventDefault()
+
+  if (!newJyutping.trim() || !newEnglish.trim()) return
+
+  const { data, error } = await supabase
+    .from('entries')
+    .insert({
+      user_id: user.id,
+      jyutping: newJyutping.trim(),
+      english_meaning: newEnglish.trim(),
+      entry_type: newType,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error('Error saving entry:', error)
+    alert('Could not save entry: ' + error.message)
+    return
+  }
+
+  const entry = {
+    id: data.id,
+    jyutping: data.jyutping,
+    english: data.english_meaning,
+    type: data.entry_type,
+    category: 'Uncategorised',
+  }
+
+  setEntries((current) => [entry, ...current])
+  setNewJyutping('')
+  setNewEnglish('')
+  setShowAddForm(false)
+  setFilter('all')
+  setSearch('')
+}
 
   const wordCount = entries.filter((entry) => entry.type === 'word').length;
   const phraseCount = entries.filter((entry) => entry.type === 'phrase').length;
@@ -120,6 +203,13 @@ function App() {
             <span className="status-dot" />
             <span>Personal dictionary</span>
           </div>
+            <button
+              className="nav-item"
+              onClick={signOut}
+            >
+              <span className="nav-icon">↪</span>
+              Sign out
+            </button>
           <div className="sidebar-version">CANTOLAB · VERSION 0.1</div>
         </div>
       </aside>
