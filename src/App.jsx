@@ -29,7 +29,7 @@ function normaliseJyutping(value, ignoreTones = false) {
 }
 
 function App() {
-  
+
   const [entries, setEntries] = useState([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -38,130 +38,299 @@ function App() {
   const [newJyutping, setNewJyutping] = useState('');
   const [newEnglish, setNewEnglish] = useState('');
   const [newType, setNewType] = useState('word');
-  const [newCategory, setNewCategory] = useState('Everyday');
-  
+  const [newCategories, setNewCategories] = useState([]);
+  const [categories, setCategories] = useState([]);
+
   const filteredEntries = useMemo(() => {
-  const query = normaliseSearch(search);
-  const hasToneNumbers = /[1-6]/.test(search);
+    const query = normaliseSearch(search);
+    const hasToneNumbers = /[1-6]/.test(search);
 
-  const jyutpingQuery = normaliseJyutping(search, !hasToneNumbers);
-  
-  return entries.filter((entry) => {
-    const matchesType = filter === 'all' || entry.type === filter;
+    const jyutpingQuery = normaliseJyutping(search, !hasToneNumbers);
 
-    const matchesJyutping =
-      !query ||
-      normaliseJyutping(entry.jyutping, !hasToneNumbers).includes(jyutpingQuery);
+    return entries.filter((entry) => {
+      const matchesType = filter === 'all' || entry.type === filter;
 
-    const matchesEnglish =
-      !query ||
-      normaliseSearch(entry.english).includes(query) ||
-      normaliseSearch(entry.category).includes(query);
+      const matchesJyutping =
+        !query ||
+        normaliseJyutping(entry.jyutping, !hasToneNumbers).includes(jyutpingQuery);
 
-    return matchesType && (matchesJyutping || matchesEnglish);
-  });
-}, [entries, search, filter]);
+      const matchesEnglish =
+        !query ||
+        normaliseSearch(entry.english).includes(query) ||
+        (entry.categories || []).some((category) =>
+          normaliseSearch(category).includes(query)
+        );;
+
+      return matchesType && (matchesJyutping || matchesEnglish);
+    });
+  }, [entries, search, filter]);
   const { user, loading, signOut } = useAuth()
   const hasLoadedRef = useRef(false)
   useEffect(() => {
-  if (!user || hasLoadedRef.current) return
+    if (!user || hasLoadedRef.current) return
 
-  hasLoadedRef.current = true
+    hasLoadedRef.current = true
 
-  async function loadEntries() {
-    const { data: existingEntries, error: loadError } = await supabase
-      .from('entries')
-      .select('id, jyutping, english_meaning, entry_type')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-
-    if (loadError) {
-      console.error('Error loading vocabulary:', loadError)
-      return
-    }
-
-    let databaseEntries = existingEntries
-
-    // Import starter vocabulary only if the database is empty
-    if (databaseEntries.length === 0) {
-      const starterData = starterEntries.map((entry) => ({
-        user_id: user.id,
-        jyutping: entry.jyutping,
-        english_meaning: entry.english,
-        entry_type: entry.type,
-      }))
-
-      const { data: importedEntries, error: importError } = await supabase
+    async function loadEntries() {
+      const { data: existingEntries, error: loadError } = await supabase
         .from('entries')
-        .insert(starterData)
         .select('id, jyutping, english_meaning, entry_type')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
 
-      if (importError) {
-        console.error('Error importing starter vocabulary:', importError)
+      if (loadError) {
+        console.error('Error loading vocabulary:', loadError)
         return
       }
 
-      databaseEntries = importedEntries
+      let databaseEntries = existingEntries
+
+      // Import starter vocabulary only if the database is empty
+      if (databaseEntries.length === 0) {
+        const starterData = starterEntries.map((entry) => ({
+          user_id: user.id,
+          jyutping: entry.jyutping,
+          english_meaning: entry.english,
+          entry_type: entry.type,
+        }))
+
+        const { data: importedEntries, error: importError } = await supabase
+          .from('entries')
+          .insert(starterData)
+          .select('id, jyutping, english_meaning, entry_type')
+
+        if (importError) {
+          console.error('Error importing starter vocabulary:', importError)
+          return
+        }
+
+        databaseEntries = importedEntries
+      }
+
+
+      const { data: categoryLinks, error: linksError } = await supabase
+        .from('entry_categories')
+        .select('entry_id, category_id')
+        .eq('user_id', user.id)
+
+      if (linksError) {
+        console.error('Error loading category links:', linksError)
+        return
+      }
+
+      const { data: categoryRows, error: categoryError } = await supabase
+        .from('categories')
+        .select('id, name')
+        .eq('user_id', user.id)
+
+      if (categoryError) {
+        console.error('Error loading category names:', categoryError)
+        return
+      }
+
+      const categoryNamesById = Object.fromEntries(
+        categoryRows.map((category) => [category.id, category.name])
+      )
+
+      const categoriesByEntry = {}
+
+      categoryLinks.forEach((link) => {
+        if (!categoriesByEntry[link.entry_id]) {
+          categoriesByEntry[link.entry_id] = []
+        }
+
+        const categoryName = categoryNamesById[link.category_id]
+
+        if (categoryName) {
+          categoriesByEntry[link.entry_id].push(categoryName)
+        }
+      })
+
+      const formattedEntries = databaseEntries.map((entry) => ({
+        id: entry.id,
+        jyutping: entry.jyutping,
+        english: entry.english_meaning,
+        type: entry.entry_type,
+        categories: categoriesByEntry[entry.id] || [],
+      }))
+
+      setEntries(formattedEntries)
+
     }
 
-    const formattedEntries = databaseEntries.map((entry) => ({
-      id: entry.id,
-      jyutping: entry.jyutping,
-      english: entry.english_meaning,
-      type: entry.entry_type,
-      category: 'Uncategorised',
-    }))
+    loadEntries()
+  }, [user])
+  useEffect(() => {
+    if (!user) return
 
-    setEntries(formattedEntries)
+    async function loadCategories() {
+      const defaultCategories = [
+        'Everyday',
+        'Greetings',
+        'Food',
+        'Questions',
+        'Conversation',
+        'Family',
+        'Other',
+      ]
+
+      // Create any missing default categories
+      const { error: insertError } = await supabase
+        .from('categories')
+        .upsert(
+          defaultCategories.map((name) => ({
+            user_id: user.id,
+            name,
+          })),
+          {
+            onConflict: 'user_id,name',
+            ignoreDuplicates: true,
+          }
+        )
+
+      if (insertError) {
+        console.error('Error creating default categories:', insertError)
+        return
+      }
+
+      const { data, error } = await supabase
+        .from('categories')
+        .select('id, name')
+        .eq('user_id', user.id)
+        .order('name')
+
+      if (error) {
+        console.error('Error loading categories:', error)
+        return
+      }
+
+      setCategories(data)
+    }
+
+    loadCategories()
+  }, [user])
+  if (loading) {
+    return <div>Loading...</div>
   }
 
-  loadEntries()
-}, [user])
+  if (!user) {
+    return <Login />
+  }
 
-if (loading) {
-  return <div>Loading...</div>
-}
-
-if (!user) {
-  return <Login />
-}
   async function addEntry(event) {
-  event.preventDefault()
+    event.preventDefault()
 
-  if (!newJyutping.trim() || !newEnglish.trim()) return
+    if (!newJyutping.trim() || !newEnglish.trim()) return
 
-  const { data, error } = await supabase
-    .from('entries')
-    .insert({
-      user_id: user.id,
-      jyutping: newJyutping.trim(),
-      english_meaning: newEnglish.trim(),
-      entry_type: newType,
+    // Save the entry first
+    const { data, error } = await supabase
+      .from('entries')
+      .insert({
+        user_id: user.id,
+        jyutping: newJyutping.trim(),
+        english_meaning: newEnglish.trim(),
+        entry_type: newType,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error('Error saving entry:', error)
+      alert('Could not save entry: ' + error.message)
+      return
+    }
+
+    // Save the selected category links
+    if (newCategories.length > 0) {
+      const { error: categoryError } = await supabase
+        .from('entry_categories')
+        .insert(
+          newCategories.map((categoryId) => ({
+            user_id: user.id,
+            entry_id: data.id,
+            category_id: categoryId,
+          }))
+        )
+
+      if (categoryError) {
+        console.error('Error saving categories:', categoryError)
+
+        // Roll back the entry so it isn't left without its selected tags
+        await supabase
+          .from('entries')
+          .delete()
+          .eq('id', data.id)
+          .eq('user_id', user.id)
+
+        alert('Could not save categories: ' + categoryError.message)
+        return
+      }
+    }
+
+    // Update the app's local display
+    const selectedCategoryNames = categories
+      .filter((category) => newCategories.includes(category.id))
+      .map((category) => category.name)
+
+    const entry = {
+      id: data.id,
+      jyutping: data.jyutping,
+      english: data.english_meaning,
+      type: data.entry_type,
+      categories: selectedCategoryNames,
+    }
+
+
+    // Load category links for this user's entries
+    const { data: categoryLinks, error: linksError } = await supabase
+      .from('entry_categories')
+      .select('entry_id, category_id')
+      .eq('user_id', user.id)
+
+    if (linksError) {
+      console.error('Error loading category links:', linksError)
+      return
+    }
+
+    // Load category names
+    const { data: categoryRows, error: categoryError } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('user_id', user.id)
+
+    if (categoryError) {
+      console.error('Error loading category names:', categoryError)
+      return
+    }
+
+    // Match category IDs to their names, grouped by entry
+    const categoryNamesById = Object.fromEntries(
+      categoryRows.map((category) => [category.id, category.name])
+    )
+
+    const categoriesByEntry = {}
+
+    categoryLinks.forEach((link) => {
+      if (!categoriesByEntry[link.entry_id]) {
+        categoriesByEntry[link.entry_id] = []
+      }
+
+      const categoryName = categoryNamesById[link.category_id]
+
+      if (categoryName) {
+        categoriesByEntry[link.entry_id].push(categoryName)
+      }
     })
-    .select()
-    .single()
 
-  if (error) {
-    console.error('Error saving entry:', error)
-    alert('Could not save entry: ' + error.message)
-    return
+    setEntries((current) => [entry, ...current])
+    setNewJyutping('')
+    setNewEnglish('')
+    setNewCategories([])
+    setShowAddForm(false)
+    setFilter('all')
+    setSearch('')
   }
 
-  const entry = {
-    id: data.id,
-    jyutping: data.jyutping,
-    english: data.english_meaning,
-    type: data.entry_type,
-    category: 'Uncategorised',
-  }
-
-  setEntries((current) => [entry, ...current])
-  setNewJyutping('')
-  setNewEnglish('')
-  setShowAddForm(false)
-  setFilter('all')
-  setSearch('')
-}
 
   const wordCount = entries.filter((entry) => entry.type === 'word').length;
   const phraseCount = entries.filter((entry) => entry.type === 'phrase').length;
@@ -203,13 +372,13 @@ if (!user) {
             <span className="status-dot" />
             <span>Personal dictionary</span>
           </div>
-            <button
-              className="nav-item"
-              onClick={signOut}
-            >
-              <span className="nav-icon">↪</span>
-              Sign out
-            </button>
+          <button
+            className="nav-item"
+            onClick={signOut}
+          >
+            <span className="nav-icon">↪</span>
+            Sign out
+          </button>
           <div className="sidebar-version">CANTOLAB · VERSION 0.1</div>
         </div>
       </aside>
@@ -315,23 +484,38 @@ if (!user) {
                           <option value="phrase">Phrase / sentence</option>
                         </select>
                       </label>
-                      <label>
-                        Category
-                        <select
-                          value={newCategory}
-                          onChange={(e) => setNewCategory(e.target.value)}
-                        >
-                          {['Everyday', 'Greetings', 'Food', 'Questions', 'Conversation', 'Family', 'Other'].map((category) => (
-                            <option key={category}>{category}</option>
+                      <div className="form-field">
+                        <label>Categories</label>
+                        <div className="entry-category-list">
+                          {categories.map((category) => (
+                            <label key={category.id} className="category-option">
+                              <input
+                                type="checkbox"
+                                checked={newCategories.includes(category.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setNewCategories((current) => [
+                                      ...current,
+                                      category.id,
+                                    ])
+                                  } else {
+                                    setNewCategories((current) =>
+                                      current.filter((id) => id !== category.id)
+                                    )
+                                  }
+                                }}
+                              />
+                              {category.name}
+                            </label>
                           ))}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="form-actions">
-                      <button type="button" className="secondary-button" onClick={() => setShowAddForm(false)}>
-                        Cancel
-                      </button>
-                      <button type="submit" className="primary-button">Save entry</button>
+                        </div>
+                      </div>
+                      <div className="form-actions">
+                        <button type="button" className="secondary-button" onClick={() => setShowAddForm(false)}>
+                          Cancel
+                        </button>
+                        <button type="submit" className="primary-button">Save entry</button>
+                      </div>
                     </div>
                   </form>
                 </section>
@@ -405,7 +589,18 @@ if (!user) {
                               {entry.type}
                             </span>
                           </td>
-                          <td><span className="category-text">{entry.category}</span></td>
+                          <td>
+                            <div className="entry-category-list">
+                              {entry.categories?.length > 0
+                                ? entry.categories.map((category) => (
+                                  <span key={category} className="category-text">
+                                    {category}
+                                  </span>
+                                ))
+                                : <span className="category-text">Uncategorised</span>
+                              }
+                            </div>
+                          </td>
                         </tr>
                       ))}
                       {filteredEntries.length === 0 && (
